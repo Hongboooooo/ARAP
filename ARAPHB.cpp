@@ -30,8 +30,8 @@ void ARAPHB::get_gradients()
         for (int j = 0; j < adjacency_list[opt_list[i]].size(); j++)
         {
 
-            e_i += (R_s[opt_list[i]] + R_s[adjacency_list[opt_list[i]][j]]) * (V.row(opt_list[i]) - V.row(adjacency_list[opt_list[i]][j])).transpose();
-            e_i_ += V_.row(opt_list[i]) - V_.row(adjacency_list[opt_list[i]][j]);
+            e_i += W(opt_list[i], adjacency_list[opt_list[i]][j]) * (R_s[opt_list[i]] + R_s[adjacency_list[opt_list[i]][j]]) * (V.row(opt_list[i]) - V.row(adjacency_list[opt_list[i]][j])).transpose();
+            e_i_ += W(opt_list[i], adjacency_list[opt_list[i]][j]) * (V_.row(opt_list[i]) - V_.row(adjacency_list[opt_list[i]][j]));
         }
 
         G_s.row(i) = (4 * e_i_ - 2 * e_i);
@@ -39,12 +39,33 @@ void ARAPHB::get_gradients()
     }
 }
 
+void ARAPHB::get_full_gradients()
+{
+    for (int i : opt_list)
+    {
+        Eigen::Vector3d e_i = Eigen::Vector3d(0, 0, 0);
+        Eigen::Vector3d e_i_ = Eigen::Vector3d(0, 0, 0);
+        for (int j : adjacency_list[i])
+        {
+
+            e_i += W(i, j) * ((R_s[i] + R_s[j]) * (V.row(i) - V.row(j)).transpose());
+            e_i_ += W(i, j) * (V_.row(i) - V_.row(j));
+        }
+        G_fs.row(i) = (4 * e_i_ - 2 * e_i);
+    }
+
+    for (int i : selected_vertices_list)
+    {
+        G_fs.row(i) = Eigen::Vector3d(0,0,0);
+    }
+}
+
 void ARAPHB::gradient_descend_step(Eigen::MatrixXd& velocity, float momentum, float learning_rate, Eigen::MatrixXd& G_s)
 {
-    velocity = momentum * velocity - learning_rate * G_s;
+    velocity = momentum * velocity + learning_rate * G_s;
     for (int i = 0; i < opt_list.size(); i++)
     {
-        V_.row(opt_list[i]) = V_.row(opt_list[i]) + velocity.row(i);
+        V_.row(opt_list[i]) = V_.row(opt_list[i]) - velocity.row(i);
     }
 }
 
@@ -222,6 +243,31 @@ void ARAPHB::get_laplacian_sparse_matrix(std::vector<int>& selected_vertices_lis
     L.setFromTriplets(triplets.begin(), triplets.end());
 }
 
+void ARAPHB::get_hessian_matrix(std::vector<int>& selected_vertices_list)
+{
+    H.resize(V.rows(), V.rows());
+    std::vector<Eigen::Triplet<double>> triplets;
+    for (int i : opt_list)
+    {
+        //std::cout << i << ", ";
+        double accum_diagonal = 0;
+        for (int j : adjacency_list[i])
+        {
+            accum_diagonal += 4 * W(i, j);
+            triplets.push_back(Eigen::Triplet<double>(i, j, -4 * W(i, j)));
+        }
+        triplets.push_back(Eigen::Triplet<double>(i, i, accum_diagonal));
+    }
+    //std::cout << std::endl;
+    for (int i : selected_vertices_list)
+    {
+        //std::cout << i << ", ";
+        triplets.push_back(Eigen::Triplet<double>(i, i, 1));
+    }
+    //std::cout << std::endl;
+    H.setFromTriplets(triplets.begin(), triplets.end());
+}
+
 void ARAPHB::init(int use_cotangent_weights, Eigen::MatrixXd& V_out, Eigen::MatrixXi& F_out)
 {
     V = V_out;
@@ -259,6 +305,7 @@ void ARAPHB::prep(Eigen::MatrixXd& V_out, Eigen::VectorXi& selected_vertices)
     }
     //std::cout << std::endl;
     get_laplacian_sparse_matrix(selected_vertices_list);
+    get_hessian_matrix(selected_vertices_list);
 }
 
 Eigen::MatrixXd ARAPHB::linear_solver(int apply_initial_guess, int step_count)
@@ -335,6 +382,11 @@ void ARAPHB::initialize_non_linear_solver(float momentum_out, float learning_rat
     learning_rate = learning_rate_out;
 }
 
+void ARAPHB::initialize_2nd_order_solver()
+{
+    G_fs.resize(V_.rows(), 3);
+}
+
 Eigen::MatrixXd ARAPHB::one_iter_non_linear_solver()
 {
     get_rotation();
@@ -343,6 +395,18 @@ Eigen::MatrixXd ARAPHB::one_iter_non_linear_solver()
     // gradient descend
     gradient_descend_step(velocity, momentum, learning_rate, G_s);
 
+    return V_;
+}
+
+Eigen::MatrixXd ARAPHB::one_iter_2nd_order_solver()
+{
+    get_rotation();
+
+    get_full_gradients();
+
+    solver.compute(H);
+    V_ -= solver.solve(G_fs);
+    
     return V_;
 }
 
@@ -374,6 +438,7 @@ Eigen::MatrixXd ARAPHB::solve(int use_nonlinear_solver, int apply_initial_guess,
 void ARAPHB::get_variation(Eigen::MatrixXd& V_change_out)
 {
     b_g.resize(V_.rows(), 3);
+    G_fs.resize(V_.rows(), 3);
     for (int i = 0; i < V_change_out.rows(); i++)
     {
         V_.row(selected_vertices_list[i]) = V_change_out.row(i);
@@ -382,8 +447,34 @@ void ARAPHB::get_variation(Eigen::MatrixXd& V_change_out)
 
 void ARAPHB::apply_initial_guess()
 {
+    //std::cout <<"Before Guess: "<< V_ << std::endl;
+    Eigen::MatrixXd b_guess = L * V;
+    for (int i : selected_vertices_list)
+    {
+        b_guess.row(i) = V_.row(i);
+    }
     solver.compute(L);
-    V_ = solver.solve(L * V_);
+    V_ = solver.solve(b_guess);
+    //std::cout << "After Guess: " << V_ << std::endl;
+}
+
+Eigen::MatrixXd ARAPHB::apply_initial_guess_and_out()
+{
+    //std::cout <<"Before Guess: "<< V_ << std::endl;
+    Eigen::MatrixXd b_guess = L * V;
+    for (int i : selected_vertices_list)
+    {
+        b_guess.row(i) = V_.row(i);
+    }
+    solver.compute(L);
+    V_ = solver.solve(b_guess);
+    //std::cout << "After Guess: " << V_ << std::endl;
+    return V_;
+}
+
+Eigen::MatrixXd ARAPHB::output_current_deformed_mesh()
+{
+    return V_;
 }
 
 Eigen::MatrixXd ARAPHB::one_iter_linear_solver()

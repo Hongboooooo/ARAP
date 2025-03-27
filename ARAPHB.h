@@ -27,11 +27,19 @@ public:
 
 	void apply_initial_guess();
 
+	Eigen::MatrixXd apply_initial_guess_and_out();
+
+	Eigen::MatrixXd output_current_deformed_mesh();
+
 	Eigen::MatrixXd one_iter_linear_solver();
 
 	void initialize_non_linear_solver(float momentum, float learning_rate);
 
+	void initialize_2nd_order_solver();
+
 	Eigen::MatrixXd one_iter_non_linear_solver();
+
+	Eigen::MatrixXd one_iter_2nd_order_solver();
 
 	double get_arap_energy();
 
@@ -46,8 +54,10 @@ private:
 	std::vector<int> selected_vertices_list;
 	Eigen::MatrixXd W;
 	Eigen::SparseMatrix<double> L;
+	Eigen::SparseMatrix<double> H;
 	std::vector<Eigen::MatrixXd> R_s;
 	Eigen::MatrixXd G_s;
+	Eigen::MatrixXd G_fs;
 	Eigen::MatrixXd b_g;
 	double Pi_half = 1.57079632675;
 	Eigen::SparseLU<Eigen::SparseMatrix<double>> solver;
@@ -59,9 +69,9 @@ private:
 
 	void get_gradients();
 
-	void gradient_descend_step(Eigen::MatrixXd&, float, float, Eigen::MatrixXd&);
+	void get_full_gradients();
 
-	
+	void gradient_descend_step(Eigen::MatrixXd&, float, float, Eigen::MatrixXd&);
 
 	void get_weight(int use_cotangent_weights, Eigen::MatrixXd& V, Eigen::MatrixXi& F);
 
@@ -69,6 +79,8 @@ private:
 
 	//void get_laplacian_sparse_matrix(Eigen::SparseMatrix<double>&, std::vector<int>&);
 	void get_laplacian_sparse_matrix(std::vector<int>&);
+
+	void get_hessian_matrix(std::vector<int>& selected_vertices_list);
 
 	Eigen::MatrixXd linear_solver(int apply_initial_guess, int step_count);
 
